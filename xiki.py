@@ -1,7 +1,13 @@
 import sublime, sublime_plugin
-from lib.util import communicate
+import lib.util
 
 import re
+import sys
+
+# reload modules
+for mod in sys.modules:
+	if (mod == 'lib.util' or mod == 'lib') and sys.modules[mod] != None:
+		reload(sys.modules[mod])
 
 def xiki(view):
 	settings = view.settings()
@@ -25,7 +31,7 @@ def xiki(view):
 			view.end_edit(edit)
 			return
 
-		output = communicate(['xiki'] + tree.split(' '))
+		output = lib.util.communicate(['xiki'] + tree.split(' '))
 		if output:
 			insert(view, output, indent + '\t')
 
