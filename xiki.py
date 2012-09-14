@@ -32,9 +32,9 @@ def xiki(view):
 			view.end_edit(edit)
 			return
 
-		if which('ruby'):
+		if lib.util.which('ruby'):
 			print 'using ruby from PATH:', which('ruby')
-			cmd = ['ruby', which('xiki')]
+			cmd = ['ruby', lib.util.which('xiki')]
 		else:
 			cmd = ['xiki']
 
