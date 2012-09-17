@@ -1,80 +1,137 @@
 import sublime, sublime_plugin
-import lib.util
+from lib.util import communicate, which
 
-import re
 import sys
+# reload lib.util on update/reload of primary module
+# so improvements will be loaded without a sublime restart
+sys.modules['lib.util'] = reload(sys.modules['lib.util'])
 
-# reload modules
-for mod in sys.modules:
-	if (mod == 'lib.util' or mod == 'lib') and sys.modules[mod] != None:
-		reload(sys.modules[mod])
+import os
+import re
+import shlex
+
+INDENTATION = '  '
+
+class BoundaryError(Exception): pass
 
 def xiki(view):
 	settings = view.settings()
 
+	output = None
+	cmd = None
+	oldcwd = None
 	if settings.get('xiki'):
-		indent, sign, tag, tree = find_tree(view)
-		if not tree: return
-		print 'xiki', repr(indent), sign, tree
+		indent, sign, path, tag, tree = find_tree(view)
+		print 'xiki', sign, path, tree
 
 		pos = get_pos(view)
-		if sign == '+':
-			replace_line(view, pos, indent + '- ' + tag)
-
-		if get_line(view, 1).startswith(indent + '\t'):
+		if get_line(view, 1).startswith(indent + INDENTATION):
 			if sign == '-':
 				replace_line(view, pos, indent + '+ ' + tag)
 
 			edit = view.begin_edit()
-			cleanup(view, edit, pos, indent + '\t')
+			cleanup(view, edit, pos, indent + INDENTATION)
 			select(view, pos)
-
 			view.end_edit(edit)
 			return
+		elif sign == '$':
+			if path:
+				oldcwd = os.getcwd()
 
-		if lib.util.which('ruby'):
-			print 'using ruby from PATH:', which('ruby')
-			cmd = ['ruby', lib.util.which('xiki')]
-		else:
-			cmd = ['xiki']
+				# maybe this should be offloaded into find_tree
+				# so path will be multiple directories instead of just a base dir
+				path_re = r'^(.+)/%s$' % re.escape(tag)
+				match = re.match(path_re, tree)
+				if match:
+					os.chdir(os.path.join(path, match.group(1)))
+				else:
+					os.chdir(path)
 
-		cmd += tree.split(' ')
-		output = lib.util.communicate(cmd)
+			cmd = shlex.split(tag.encode('ascii', 'replace'), True)
+		elif path:
+			# directory listing or file open
+			target = os.path.join(path, tree)
+			if os.path.isfile(target):
+				sublime.active_window().open_file(target)
+				return
+			elif os.path.isdir(target):
+				dirs = ''
+				files = ''
+				for entry in os.listdir(target):
+					absolute = os.path.join(target, entry)
+					if os.path.isdir(absolute):
+						dirs += '+ %s/\n' % entry
+					else:
+						files += '%s\n' % entry
+
+				output = (dirs + files) or '\n'
+		elif sign == '-':
+			# dunno here
+			return
+		elif tree:
+			if which('ruby'):
+				cmd = ['ruby', which('xiki')]
+			else:
+				cmd = ['xiki']
+
+			cmd += tree.split(' ')
+
+		if cmd:
+			output = communicate(cmd, None, 3, return_error=True)
+			if oldcwd:
+				os.chdir(oldcwd)
+
 		if output:
-			insert(view, output, indent + '\t')
+			if sign == '+':
+				replace_line(view, pos, indent + '- ' + tag)
+
+			insert(view, output, indent + INDENTATION)
 
 def find_tree(view):
+	regex = re.compile(r'^(\s*)([-+$]\s*)?(.*)$')
+
 	view.run_command('single_selection')
 	line = get_line(view)
-	match = re.match('^(\s*)(\+ |- )?(.*)$', line)
+	match = regex.match(line)
+
 	line_indent = last_indent = match.group(1)
 	sign = (match.group(2) or '').strip()
 	tag = match.group(3)
 	tree = [tag]
+	if tag.startswith('/'):
+		sign = '/'
 
 	offset = -1
 	while last_indent != '':
-		line = get_line(view, offset)
-		offset -= 1
-
-		match = re.match('^(\s*)(\+ |- )?(.*)$', line)
-		if match:
-			indent = match.group(1)
-			tag = match.group(3)
-
-			if len(indent) < len(last_indent) and tag:
-				last_indent = indent
-				tree.insert(0, tag.strip('/'))
-
-	new_tree = []
-	for tag in reversed(tree):
-		if tag.startswith('@'):
-			new_tree.insert(0, tag.strip('@'))
+		try:
+			line = get_line(view, offset)
+		except BoundaryError:
 			break
 
-		new_tree.insert(0, tag)
+		offset -= 1
 
-	return line_indent, sign, tree[-1], '/'.join(new_tree)
+		match = regex.match(line)
+		if match:
+			indent = match.group(1)
+			part = match.group(3)
+
+			if len(indent) < len(last_indent) and part:
+				last_indent = indent
+				tree.insert(0, part.rstrip('/'))
+
+	new_tree = []
+	path = None
+	for part in reversed(tree):
+		if part.startswith('@'):
+			new_tree.insert(0, part.strip('@'))
+			break
+		elif part.startswith('/'):
+			path = part
+			break
+		else:
+			new_tree.insert(0, part)
+
+	return line_indent, sign, path, tag, '/'.join(new_tree)
 
 # helpers
 
@@ -130,7 +187,8 @@ def get_line(view, offset=0):
 	row, _ = view.rowcol(get_pos(view))
 
 	point = view.text_point(row + offset, 0)
-	assert row + offset >= 0
+	if row + offset < 0:
+		raise BoundaryError
 
 	line = view.line(point)
 	return view.substr(line).strip('\r\n')

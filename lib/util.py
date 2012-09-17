@@ -3,6 +3,8 @@ import shutil
 import tempfile
 import subprocess
 
+from threading import Timer
+
 def memoize(f):
 	rets = {}
 
@@ -28,7 +30,7 @@ def find_path(env):
 
 		if shell in ('bash', 'zsh'):
 			return extract_path(
-				(shell_path, '--login', '-c', 'echo __SUBL__ $PATH')
+				(shell_path, '--login', '-c', 'echo __SUBL__$PATH')
 			)
 		elif shell == 'fish':
 			return extract_path(
@@ -65,14 +67,24 @@ def which(cmd, env=None):
 			return full
 
 # popen methods
-def communicate(cmd, stdin=None):
-	out = popen(cmd)
-	if out is not None:
-		out = out.communicate(stdin)
+def communicate(cmd, stdin=None, timeout=None, **popen_args):
+	p = popen(cmd, **popen_args)
+	if isinstance(p, subprocess.Popen):
+		timer = None
+		if timeout is not None:
+			kill = lambda: p.kill()
+			timer = Timer(timeout, kill)
+			timer.start()
+
+		out = p.communicate(stdin)
+		if timer is not None:
+			timer.cancel()
+
 		return (out[0] or '') + (out[1] or '')
+	elif isinstance(p, basestring):
+		return p
 	else:
 		return ''
-
 
 def tmpfile(cmd, code, suffix=''):
 	if isinstance(cmd, basestring):
@@ -125,7 +137,7 @@ def tmpdir(cmd, files, filename, code):
 	shutil.rmtree(d, True)
 	return out
 
-def popen(cmd, env=None):
+def popen(cmd, env=None, return_error=False):
 	if isinstance(cmd, basestring):
 		cmd = cmd,
 
@@ -145,4 +157,7 @@ def popen(cmd, env=None):
 	except OSError, err:
 		print 'Error launching', repr(cmd)
 		print 'Error was:', err.strerror
+
+		if return_error:
+			return err.strerror
 
